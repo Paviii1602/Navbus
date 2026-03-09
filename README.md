@@ -106,38 +106,6 @@ The frontend will start at `http://localhost:3000`
 | `/api/track/<bus_id>` | GET | Track specific bus with ETA |
 | `/api/eta/<stop_id>` | GET | Get ETA for a stop |
 
-## Bus Routes (Vellore)
-
-### Route 1: Bagayam - Katpadi (Via Old Bus Stand)
-- 23 stops
-- Operates: 5:30 AM - 9:30 PM
-- Interval: 15 minutes
-
-### Route 2: Bagayam - Katpadi (Via Eye Hospital)
-- 20 stops
-- Operates: 5:30 AM - 9:30 PM
-- Interval: 15 minutes
-
-### Route 3: Katpadi - Bagayam (Via Toll Gate)
-- 17 stops
-- Operates: 5:30 AM - 9:30 PM
-- Interval: 15 minutes
-
-### Route 4: Katpadi - Bagayam (Via DKM College)
-- 18 stops
-- Operates: 5:30 AM - 9:30 PM
-- Interval: 15 minutes
-
-## Available Buses
-
-| Bus ID | Bus Name | Bus Number | Route |
-|--------|----------|------------|-------|
-| TN23 2034 | VVD | 1 | 1, 3 |
-| TN23 1098 | VVD | 2 | 1, 2 |
-| TN16 1098 | VVD | 2 | 4 |
-| TN23 2345 | Govt Bus | GB1 | 1 |
-| TN23 2345 | Govt Bus | GB2 | 3 |
-
 ## Design
 
 The app features:
@@ -152,3 +120,4 @@ The app features:
 - Implement driver GPS data collection
 - Add push notifications for bus arrivals
 - Consider offline caching for better user experience
+
