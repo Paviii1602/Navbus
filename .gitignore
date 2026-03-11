@@ -1,0 +1,35 @@
+# Dependencies
+node_modules/
+node_module/
+venv/
+.venv/
+env/
+
+# Build outputs
+build/
+frontend/build/
+android/app/build/
+*.apk
+
+# Environment variables
+.env
+frontend/.env
+
+# Python
+__pycache__/
+_pycache_/
+*.py[cod]
+*$py.class
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Database (optional, keep if you want to track the initial db)
+# database.db

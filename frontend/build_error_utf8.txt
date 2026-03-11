@@ -1,0 +1,16 @@
+﻿
+> navbus-frontend@1.0.0 build
+> react-scripts build
+
+Creating an optimized production build...
+Failed to compile.
+
+[eslint] 
+src\App.js
+  Line 508:90:   'routeId' is not defined  no-undef
+  Line 542:88:   'routeId' is not defined  no-undef
+  Line 1691:95:  'routeId' is not defined  no-undef
+
+Search for the keywords to learn more about each error.
+
+
