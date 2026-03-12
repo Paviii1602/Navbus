@@ -9,8 +9,8 @@ import os
 import time as _time
 
 app = Flask(__name__)
-# For production, we can wrap this in a factor if needed, but 'app:app' works for simple cases.
-app.config['JWT_SECRET_KEY'] = 'navbus-super-secret-key-change-this'
+# Load secret key from environment variable for security
+app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'navbus-default-secret-key')
 CORS(app)
 socketio = SocketIO(app, cors_allowed_origins="*")
 jwt = JWTManager(app)
@@ -18,7 +18,8 @@ jwt = JWTManager(app)
 # ─── DB HELPER ───────────────────────────────────────────────────────────────
 
 def get_db_connection():
-    conn = sqlite3.connect('database.db')
+    db_path = os.getenv('DATABASE_URL', 'database.db')
+    conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -41,7 +42,7 @@ def calculate_eta(distance_km, speed_kmh=25):
 
 @app.route('/', methods=['GET'])
 def health_check():
-    return jsonify({'status': 'NavBus Server is UP', 'ip': '10.156.157.191'})
+    return jsonify({'status': 'NavBus Server is UP', 'deployed': True})
 
 # ─── AUTH ────────────────────────────────────────────────────────────────────
 
@@ -501,7 +502,7 @@ def track_bus(bus_id):
 @app.route('/api/eta/<int:stop_id>', methods=['GET'])
 def get_eta_for_stop(stop_id):
     conn = get_db_connection()
-    stop = conn.execute('SELECT * FROM stops WHERE id = ?', (stop_id,)).fetchone()
+    stop = conn.execute('SELECT * FROM stops id = ?', (stop_id,)).fetchone()
     if stop is None:
         conn.close()
         return jsonify({'error': 'Stop not found'}), 404
@@ -921,7 +922,9 @@ def crowd_status(bus_id):
     return jsonify(result)
 
 
-if __name__ == '__main__':
+# ─── APP STARTUP / INIT ────────────────────────────────────────────────────────
+
+def prepare_app():
     print("Initialising database …")
     try:
         import importlib.util
@@ -932,8 +935,15 @@ if __name__ == '__main__':
         print("[SUCCESS] Database initialised")
     except Exception as e:
         print(f"[WARNING] database_init error: {e} - using existing database")
+    
+    # Start background tasks
     print("Starting bus simulation …")
     socketio.start_background_task(target=simulate_bus_movement)
+
+# Run initialization immediately when the module is loaded (Gunicorn)
+prepare_app()
+
+if __name__ == '__main__':
     print("NavBus server → http://0.0.0.0:5000")
     port = int(os.environ.get('PORT', 5000))
     socketio.run(app, host='0.0.0.0', port=port, debug=False, allow_unsafe_werkzeug=True)
