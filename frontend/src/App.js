@@ -1,8 +1,20 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 
-const API_BASE = (process.env.REACT_APP_API_BASE) 
-  ? (process.env.REACT_APP_API_BASE.startsWith('http') ? process.env.REACT_APP_API_BASE : `https://${process.env.REACT_APP_API_BASE}/api`)
-  : 'http://10.156.157.191:5000/api';
+const getApiBase = () => {
+  const envBase = process.env.REACT_APP_API_BASE;
+  if (!envBase) return 'http://10.156.157.191:5000/api';
+  
+  let base = envBase.trim();
+  if (!base.startsWith('http')) {
+    base = `https://${base}`;
+  }
+  // Remove trailing slash if present
+  base = base.replace(/\/$/, "");
+  // Ensure it ends with /api
+  return base.endsWith('/api') ? base : `${base}/api`;
+};
+
+const API_BASE = getApiBase();
 const GOOGLE_MAPS_API_KEY = process.env.REACT_APP_GOOGLE_MAPS_API_KEY;
 // ─── SVG ICONS ───────────────────────────────────────────────────────────────
 const BusIcon = () => (
