@@ -1,5 +1,5 @@
 // NavBus Service Worker — enables offline support and PWA install
-const CACHE_NAME = 'navbus-v1';
+const CACHE_NAME = 'navbus-v2';
 
 // Files to cache for offline use
 const STATIC_ASSETS = [

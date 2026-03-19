@@ -2,7 +2,7 @@ from flask import Flask, jsonify, request
 from flask_socketio import SocketIO, emit
 from werkzeug.security import generate_password_hash,check_password_hash
 from flask_cors import CORS
-from flask_jwt_extended import (JWTManager, create_access_token,jwt_required, get_jwt_identity )
+from flask_jwt_extended import (JWTManager, create_access_token, jwt_required, get_jwt_identity )
 import sqlite3
 import math
 import os
@@ -11,7 +11,7 @@ import time as _time
 app = Flask(__name__)
 # Load secret key from environment variable for security
 app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'navbus-default-secret-key')
-CORS(app)
+CORS(app, origins="*", supports_credentials=False)
 socketio = SocketIO(app, cors_allowed_origins="*")
 jwt = JWTManager(app)
 
@@ -46,6 +46,14 @@ def health_check():
 
 # ─── AUTH ────────────────────────────────────────────────────────────────────
 
+@app.route('/api/', methods=['GET'])
+def api_root():
+    return jsonify({
+        'message': 'NavBus API',
+        'version': '1.0',
+        'status': 'running'
+    })
+
 @app.route('/api/register', methods=['POST'])
 def register():
     data = request.json
@@ -65,7 +73,7 @@ def register():
         conn.commit()
     except sqlite3.IntegrityError:
         conn.close()
-        return jsonify({'error': 'Username already exists'}), 400
+        return jsonify({'error': 'Username already exists. Please choose a different one.'}), 400
     conn.close()
     return jsonify({'message': 'User registered successfully'})
 
@@ -119,14 +127,101 @@ def get_route(route_id):
 @app.route('/api/routes/<int:route_id>/stops', methods=['GET'])
 def get_route_stops(route_id):
     conn  = get_db_connection()
-    stops = conn.execute('''
-        SELECT * FROM stops
-        WHERE route_id = ?
-        GROUP BY name
-        ORDER BY stop_order
-    ''', (route_id,)).fetchall()
+    stops = conn.execute('''SELECT * FROM stops WHERE route_id = ? ORDER BY stop_order''', (route_id,)).fetchall()
     conn.close()
     return jsonify([dict(s) for s in stops])
+
+
+@app.route('/api/stops/unique', methods=['GET'])
+def get_unique_stops():
+    conn  = get_db_connection()
+    stops = conn.execute('SELECT DISTINCT name FROM stops ORDER BY name').fetchall()
+    conn.close()
+    return jsonify([s['name'] for s in stops])
+
+
+@app.route('/api/search_trip', methods=['GET'])
+def search_trip():
+    from_stop = request.args.get('from', '').lower()
+    to_stop   = request.args.get('to', '').lower()
+    if not from_stop or not to_stop:
+        return jsonify({'buses': [], 'stops': [], 'route_id': None})
+
+    conn = get_db_connection()
+
+    # Find routes that have both stops in the correct order
+    query = '''
+        SELECT DISTINCT r.id, r.route_name,
+               s1.stop_order AS from_order,
+               s2.stop_order AS to_order
+        FROM routes r
+        JOIN stops s1 ON r.id = s1.route_id
+        JOIN stops s2 ON r.id = s2.route_id
+        WHERE LOWER(s1.name) = ? AND LOWER(s2.name) = ?
+        AND s1.stop_order < s2.stop_order
+        LIMIT 1
+    '''
+    route = conn.execute(query, (from_stop, to_stop)).fetchone()
+
+    if not route:
+        conn.close()
+        return jsonify({'buses': [], 'stops': [], 'route_id': None})
+
+    # Get only the stops BETWEEN from and to (inclusive)
+    stops = conn.execute('''
+        SELECT id, name, latitude, longitude, stop_order
+        FROM stops
+        WHERE route_id = ?
+          AND stop_order >= ? AND stop_order <= ?
+        ORDER BY stop_order
+    ''', (route['id'], route['from_order'], route['to_order'])).fetchall()
+
+    # Get all buses assigned to this route
+    buses = conn.execute(
+        'SELECT bus_id, bus_name, bus_number, route_id, start_time, end_time FROM buses_with_route WHERE route_id = ?',
+        (route['id'],)
+    ).fetchall()
+
+    # Get active buses (have live position) — mark them
+    cutoff = _time.strftime('%Y-%m-%d %H:%M:%S', _time.gmtime(_time.time() - 1800))
+    active_ids = set(r['bus_id'] for r in conn.execute(
+        'SELECT bus_id FROM bus_positions WHERE timestamp >= ?', (cutoff,)
+    ).fetchall())
+
+    # Deduplicate buses (each bus appears for both routes — show once)
+    seen = set()
+    results = []
+    for b in buses:
+        if b['bus_id'] in seen:
+            continue
+        seen.add(b['bus_id'])
+        pos = conn.execute(
+            'SELECT latitude, longitude, speed FROM bus_positions WHERE bus_id = ? ORDER BY timestamp DESC LIMIT 1',
+            (b['bus_id'],)
+        ).fetchone()
+        results.append({
+            'bus_id':     b['bus_id'],
+            'bus_name':   b['bus_name'],
+            'bus_number': b['bus_number'],
+            'route_id':   route['id'],
+            'route_name': route['route_name'],
+            'start_time': b['start_time'],
+            'end_time':   b['end_time'],
+            'is_active':  b['bus_id'] in active_ids,
+            'latitude':   pos['latitude']  if pos else None,
+            'longitude':  pos['longitude'] if pos else None,
+            'speed':      pos['speed']     if pos else 0,
+        })
+
+    conn.close()
+    return jsonify({
+        'buses':    results,
+        'stops':    [dict(s) for s in stops],
+        'route_id': route['id'],
+        'route_name': route['route_name'],
+        'from_stop': request.args.get('from'),
+        'to_stop':   request.args.get('to'),
+    })
 
 # ─── ROAD PATH (Google Directions API — server side to avoid CORS) ──────────
 
@@ -229,7 +324,7 @@ def get_buses():
     conn  = get_db_connection()
     buses = conn.execute('''
         SELECT b.*, r.route_name, r.start_point, r.end_point
-        FROM buses b
+        FROM buses_with_route b
         JOIN routes r ON b.route_id = r.id
     ''').fetchall()
     conn.close()
@@ -241,7 +336,7 @@ def get_bus(bus_id):
     conn = get_db_connection()
     bus  = conn.execute('''
         SELECT b.*, r.route_name, r.start_point, r.end_point
-        FROM buses b
+        FROM buses_with_route b
         JOIN routes r ON b.route_id = r.id
         WHERE b.bus_id = ?
     ''', (bus_id,)).fetchone()
@@ -256,7 +351,7 @@ def get_buses_by_route(route_id):
     conn  = get_db_connection()
     buses = conn.execute('''
         SELECT b.*, r.route_name, r.start_point, r.end_point
-        FROM buses b
+        FROM buses_with_route b
         JOIN routes r ON b.route_id = r.id
         WHERE b.route_id = ?
     ''', (route_id,)).fetchall()
@@ -270,12 +365,10 @@ def get_all_schedules():
     """Return all departures grouped by operator and route."""
     conn = get_db_connection()
     rows = conn.execute('''
-        SELECT bs.bus_id, bs.route_id, bs.arrival, bs.departure,
-               b.bus_name, b.bus_number,
-               r.route_name, r.start_point, r.end_point
+        SELECT DISTINCT bs.bus_id, bs.arrival, bs.departure,
+               b.bus_name, b.bus_number
         FROM bus_schedules bs
-        JOIN buses  b ON bs.bus_id   = b.bus_id
-        JOIN routes r ON bs.route_id = r.id
+        JOIN buses b ON bs.bus_id = b.bus_id
         ORDER BY bs.bus_id, bs.departure
     ''').fetchall()
     conn.close()
@@ -284,16 +377,15 @@ def get_all_schedules():
 
 @app.route('/api/schedules/route/<int:route_id>', methods=['GET'])
 def get_schedules_by_route(route_id):
-    """All departures for a specific route, sorted by time."""
+    """All departures for a route — returns all bus schedules (route-independent)."""
     conn = get_db_connection()
     rows = conn.execute('''
-        SELECT bs.bus_id, bs.arrival, bs.departure,
+        SELECT DISTINCT bs.bus_id, bs.arrival, bs.departure,
                b.bus_name, b.bus_number
         FROM bus_schedules bs
         JOIN buses b ON bs.bus_id = b.bus_id
-        WHERE bs.route_id = ?
         ORDER BY bs.departure
-    ''', (route_id,)).fetchall()
+    ''').fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
 
@@ -303,9 +395,8 @@ def get_schedules_by_bus(bus_id):
     """All departures for one bus_id."""
     conn = get_db_connection()
     rows = conn.execute('''
-        SELECT bs.arrival, bs.departure, bs.route_id, r.route_name
+        SELECT DISTINCT bs.arrival, bs.departure
         FROM bus_schedules bs
-        JOIN routes r ON bs.route_id = r.id
         WHERE bs.bus_id = ?
         ORDER BY bs.departure
     ''', (bus_id,)).fetchall()
@@ -329,7 +420,7 @@ def search():
 
     buses = conn.execute('''
         SELECT b.*, r.route_name
-        FROM buses b
+        FROM buses_with_route b
         JOIN routes r ON b.route_id = r.id
         WHERE LOWER(b.bus_id) LIKE ? OR LOWER(b.bus_name) LIKE ? OR LOWER(b.bus_number) LIKE ?
     ''', (f'%{query}%',) * 3).fetchall()
@@ -380,7 +471,7 @@ def get_active_buses():
                r.route_name, r.start_point, r.end_point,
                bp.latitude, bp.longitude, bp.speed, bp.timestamp
         FROM bus_positions bp
-        JOIN buses b  ON bp.bus_id   = b.bus_id
+        JOIN buses_with_route b  ON bp.bus_id   = b.bus_id
         JOIN routes r ON b.route_id  = r.id
         WHERE bp.timestamp >= ?
         ORDER BY bp.timestamp DESC
@@ -403,7 +494,7 @@ def get_nearby_buses():
     buses = conn.execute('''
         SELECT b.*, r.route_name, r.start_point, r.end_point,
                bp.latitude, bp.longitude, bp.speed, bp.timestamp
-        FROM buses b
+        FROM buses_with_route b
         JOIN routes r ON b.route_id = r.id
         LEFT JOIN bus_positions bp ON b.bus_id = bp.bus_id
         WHERE bp.timestamp IS NOT NULL
@@ -429,7 +520,7 @@ def track_bus(bus_id):
 
     bus = conn.execute('''
         SELECT b.*, r.route_name, r.start_point, r.end_point
-        FROM buses b
+        FROM buses_with_route b
         JOIN routes r ON b.route_id = r.id
         WHERE b.bus_id = ?
     ''', (bus_id,)).fetchone()
@@ -456,16 +547,23 @@ def track_bus(bus_id):
 
     # Fetch today's schedule for this bus
     schedules = conn.execute('''
-        SELECT departure FROM bus_schedules
+        SELECT DISTINCT departure FROM bus_schedules
         WHERE bus_id = ?
         ORDER BY departure
     ''', (bus_id,)).fetchall()
 
     conn.close()
 
+    seen_stops = set()
+    deduped_stops = []
+    for s in stops:
+        if s['name'] not in seen_stops:
+            seen_stops.add(s['name'])
+            deduped_stops.append(dict(s))
+
     bus_dict             = dict(bus)
     bus_dict['position'] = dict(position) if position else None
-    bus_dict['stops']    = [dict(s) for s in stops]
+    bus_dict['stops']    = deduped_stops
     bus_dict['schedule'] = [s['departure'] for s in schedules]
 
     lat   = 12.9165
@@ -478,20 +576,42 @@ def track_bus(bus_id):
 
     seen_stops = set()
     eta_list = []
+    nearest_idx  = None          # index of the stop closest to bus (current stop)
+    nearest_dist = float('inf')
+
+    # First pass — find which stop the bus is currently nearest to
+    deduped_for_eta = []
+    seen2 = set()
     for stop in stops:
-        if stop['name'] in seen_stops:
-            continue
-        seen_stops.add(stop['name'])
+        if stop['name'] not in seen2:
+            seen2.add(stop['name'])
+            deduped_for_eta.append(stop)
+
+    for i, stop in enumerate(deduped_for_eta):
+        d = calculate_distance(lat, lon, stop['latitude'], stop['longitude'])
+        if d < nearest_dist:
+            nearest_dist = d
+            nearest_idx  = i
+
+    # Second pass — build ETA list with status
+    for i, stop in enumerate(deduped_for_eta):
+        dist = calculate_distance(lat, lon, stop['latitude'], stop['longitude'])
+        eta_min = calculate_eta(dist, speed)
+
+        if i < nearest_idx:
+            status = 'passed'       # bus already went past this stop
+        elif i == nearest_idx:
+            status = 'current'      # bus is at / nearest to this stop
+        else:
+            status = 'upcoming'     # bus hasn't reached yet
+
         eta_list.append({
             'stop_id':     stop['id'],
             'stop_name':   stop['name'],
-            'eta_minutes': calculate_eta(
-                calculate_distance(lat, lon, stop['latitude'], stop['longitude']),
-                speed
-            ),
-            'distance_km': round(
-                calculate_distance(lat, lon, stop['latitude'], stop['longitude']), 2
-            ),
+            'stop_order':  stop['stop_order'],
+            'eta_minutes': eta_min,
+            'distance_km': round(dist, 2),
+            'status':      status,
         })
     bus_dict['eta'] = eta_list
 
@@ -502,14 +622,14 @@ def track_bus(bus_id):
 @app.route('/api/eta/<int:stop_id>', methods=['GET'])
 def get_eta_for_stop(stop_id):
     conn = get_db_connection()
-    stop = conn.execute('SELECT * FROM stops id = ?', (stop_id,)).fetchone()
+    stop = conn.execute('SELECT * FROM stops WHERE id = ?', (stop_id,)).fetchone()
     if stop is None:
         conn.close()
         return jsonify({'error': 'Stop not found'}), 404
 
     buses = conn.execute('''
         SELECT b.*, bp.latitude, bp.longitude, bp.speed
-        FROM buses b
+        FROM buses_with_route b
         LEFT JOIN bus_positions bp ON b.bus_id = bp.bus_id
         WHERE b.route_id = ?
     ''', (stop['route_id'],)).fetchall()
@@ -572,7 +692,7 @@ def simulate_bus_movement():
 
         for pos in positions:
             bus = conn.execute(
-                'SELECT route_id FROM buses WHERE bus_id = ?', (pos['bus_id'],)
+                'SELECT route_id FROM buses_with_route WHERE bus_id = ?', (pos['bus_id'],)
             ).fetchone()
             if bus:
                 stops = conn.execute(
@@ -615,7 +735,7 @@ def handle_track_bus(data):
         position = conn.execute('''
             SELECT bp.*, b.bus_name, b.bus_number, r.route_name
             FROM bus_positions bp
-            JOIN buses  b ON bp.bus_id   = b.bus_id
+            JOIN buses_with_route b ON bp.bus_id = b.bus_id
             JOIN routes r ON b.route_id  = r.id
             WHERE bp.bus_id = ?
             ORDER BY bp.timestamp DESC LIMIT 1
@@ -924,8 +1044,14 @@ def crowd_status(bus_id):
 
 # ─── APP STARTUP / INIT ────────────────────────────────────────────────────────
 
+_app_initialized = False
+
 def prepare_app():
-    print("Initialising database …")
+    global _app_initialized
+    if _app_initialized:
+        return
+    _app_initialized = True
+    print("Initialising database ...")
     try:
         import importlib.util
         spec = importlib.util.spec_from_file_location("database_init", "database_init.py")
@@ -944,6 +1070,10 @@ def prepare_app():
 prepare_app()
 
 if __name__ == '__main__':
-    print("NavBus server → http://0.0.0.0:5000")
     port = int(os.environ.get('PORT', 5000))
+    print(f"")
+    print(f"  NavBus backend running!")
+    print(f"  Open in browser: http://localhost:{port}")
+    print(f"  API base:        http://localhost:{port}/api")
+    print(f"")
     socketio.run(app, host='0.0.0.0', port=port, debug=False, allow_unsafe_werkzeug=True)
